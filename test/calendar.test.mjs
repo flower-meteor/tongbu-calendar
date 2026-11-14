@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import { makeServer } from '../server.mjs';
 import { WEEK, available, dateKey, timeLabel, startOfWeek, occurrences } from '../public/calendar.mjs';
 import { parseText, parseGrid, toCalendar } from '../public/timetable.mjs';
+import { cardCourse, screenshotMonday } from '../public/cards.mjs';
 
 const when=value=>Date.parse('2026-11-16T'+value+':00+08:00');
 const iso=time=>new Date(time).toISOString();
 const from=when('00:00'), to=from+WEEK;
 const week='?'+new URLSearchParams({from:iso(from),to:iso(to)});
-const event={title:'流体力学',kind:'class',start:iso(when('09:00')),end:iso(when('10:00')),weekly:true,busy:true};
+const event={title:'流体力学',location:'将军路二号楼 2201',kind:'class',start:iso(when('09:00')),end:iso(when('10:00')),weekly:true,busy:true};
 
 async function fixture(t, options) {
   const server=makeServer(options);
@@ -37,6 +38,7 @@ async function exercise(request, makeUser) {
   assert.equal(shared.data.team.invite,null);
   assert.equal(shared.data.events[0].title,'忙碌');
   assert.equal(shared.data.events[0].kind,'other');
+  assert.equal(shared.data.events[0].location,'');
   assert.ok(!JSON.stringify(shared.data).includes(event.title));
   assert.equal((await request(path+'/events/'+added.data.id,'DELETE',null,peer)).status,404);
   assert.equal((await request(path+'/events','POST',{...event,end:event.start},peer)).status,400);
@@ -55,6 +57,7 @@ async function exercise(request, makeUser) {
   assert.equal((await request('/api/join','POST',{invite:ownerInvite.data.invite},another)).status,200);
   assert.equal((await request(path+'/events/'+added.data.id,'PUT',{...event,busy:false},owner)).status,200);
   assert.equal((await request(path+week,'GET',null,peer)).data.events[0].title,event.title);
+  assert.equal((await request(path+week,'GET',null,peer)).data.events[0].location,event.location);
   assert.equal((await request(path+'/events/'+added.data.id,'DELETE',null,owner)).status,200);
   assert.equal((await request(path+week,'GET',null,peer)).data.events.length,0);
 }
@@ -128,4 +131,10 @@ test('batch import validates all courses, skips duplicate imports and respects t
   assert.equal((await request(path+'/import','POST',{events:[entry]},headers)).data.added,0);
   const list=(await request(path+week,'GET',null,headers)).data.events;
   assert.equal(occurrences(list,from,from+4*WEEK).length,2);
+  const [oneOff]=toCalendar([cardCourse(['可靠性','原理','将军路','二号楼','2201'].map(text=>({text})),{day:2,block:3})],'2026-11-16',16,true);
+  assert.deepEqual(oneOff,{title:'可靠性原理',location:'将军路二号楼 2201',start:'2026-11-18T08:00:00.000Z',end:'2026-11-18T10:00:00.000Z',until:null,weekly:false});
+  assert.equal((await request(path+'/import','POST',{events:[oneOff]},headers)).data.added,1);
+  const saved=(await request(path+week,'GET',null,headers)).data.events.find(row=>row.title===oneOff.title);
+  assert.equal(occurrences([saved],from,from+4*WEEK).length,1);
+  assert.equal(screenshotMonday('11-16 11-17 11-18 11-19 11-20 11-21 11-22','2026-11-09'),'2026-11-16');
 });

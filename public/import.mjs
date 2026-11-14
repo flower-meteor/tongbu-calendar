@@ -1,4 +1,5 @@
 import { labels,parseText,parseGrid,toCalendar } from './timetable.mjs';
+import { locateCards,cardCourse,screenshotMonday } from './cards.mjs';
 
 const cdn='https://cdn.jsdelivr.net/npm';
 const core=cdn+'/tesseract.js-core@6.0.0';
@@ -28,6 +29,11 @@ async function prepareImage(file) {
     ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);
     // Cell borders interfere with OCR's page segmentation. Keep text and lightly
     // colored cells, while whitening long, thin horizontal and vertical lines.
+    return canvas;
+  } finally {bitmap.close();}
+}
+function cleanGrid(canvas) {
+    const ctx=canvas.getContext('2d');
     const img=ctx.getImageData(0,0,canvas.width,canvas.height);
     const {data,width,height}=img;
     const mask=new Uint8Array(width*height);
@@ -48,24 +54,73 @@ async function prepareImage(file) {
     for(let x=0;x<width;x++)erase(x,height,width,Math.max(45,height*.08));
     ctx.putImageData(img,0,0);
     return canvas;
-  } finally {bitmap.close();}
 }
 
-async function recognize(file,logger,onWorker) {
+function crop(canvas,x,y,w,h,card=false) {
+  const result=document.createElement('canvas'), scale=2.6, pad=16;
+  result.width=Math.ceil(w*scale)+pad*2;result.height=Math.ceil(h*scale)+pad*2;
+  const cx=result.getContext('2d');
+  cx.fillStyle='white';cx.fillRect(0,0,result.width,result.height);
+  cx.drawImage(canvas,x,y,w,h,pad,pad,w*scale,h*scale);
+  if(card){
+    const img=cx.getImageData(pad,pad,Math.floor(w*scale),Math.floor(h*scale));
+    const data=img.data;
+    const p=(8*img.width+8)*4;
+    const threshold=Math.min(240,Math.max(170,Math.min(data[p],data[p+1],data[p+2])+26));
+    for(let i=0;i<data.length;i+=4){
+      const ink=Math.min(data[i],data[i+1],data[i+2])>=threshold?0:255;
+      data[i]=data[i+1]=data[i+2]=ink;
+    }
+    cx.putImageData(img,pad,pad);
+  }
+  return result;
+}
+async function recognize(file,logger,onWorker,startDate,onProgress) {
   const [Tesseract,canvas]=await Promise.all([loadEngine(),prepareImage(file)]);
   const worker=await Tesseract.createWorker('chi_sim+eng',1,{logger,corePath:core,workerPath:workerUrl,workerBlobURL:true});
   onWorker(worker);
   try {
+    const ctx=canvas.getContext('2d');
+    const cells=locateCards(ctx.getImageData(0,0,canvas.width,canvas.height));
+    if(cells.length) {
+      const top=Math.min(...cells.map(c=>c.y)), unit=cells[0].w;
+      await worker.setParameters({tessedit_pageseg_mode:Tesseract.PSM.SINGLE_LINE,tessedit_char_whitelist:'0123456789-./ '});
+      const dateImage=crop(canvas,unit*.42,Math.max(0,top-unit*.55),canvas.width-unit*.42,unit*.44);
+      let header=(await worker.recognize(dateImage)).data.text;
+      let date=screenshotMonday(header,startDate);
+      if(!date){
+        const pitch=unit+3;
+        for(let day=0;day<7;day++){
+          const x=canvas.width-(7-day)*pitch;
+          const cell=crop(canvas,Math.max(0,x+8),top-unit*.55,pitch-16,unit*.44);
+          header+=' '+(await worker.recognize(cell)).data.text.trim();
+        }
+        date=screenshotMonday(header,startDate);
+      }
+      await worker.setParameters({tessedit_pageseg_mode:Tesseract.PSM.SINGLE_BLOCK,tessedit_char_whitelist:''});
+      const rows=[];
+      for(const [i,c] of cells.entries()){
+        onProgress(i+1,cells.length);
+        const inset=Math.max(3,Math.round(c.w*.018));
+        const image=crop(canvas,c.x+inset,c.y+inset,c.w-2*inset,c.h-2*inset,true);
+        const raw=(await worker.recognize(image)).data.text;
+        const result=cardCourse(raw.split(/\r?\n/).map(text=>({text})),c);
+        if(!result.title)result.flag='请按原图补填课名和地点';
+        rows.push(result);
+      }
+      return {rows:rows.sort((a,b)=>a.day-b.day||a.start.localeCompare(b.start)),date,weekOnly:true};
+    }
+    cleanGrid(canvas);
     await worker.setParameters({tessedit_pageseg_mode:Tesseract.PSM.SPARSE_TEXT});
     const {data}=await worker.recognize(canvas,{}, {text:true,tsv:true});
     const grid=parseGrid(data.tsv||'');
-    if(grid.length)return grid;
+    if(grid.length)return {rows:grid};
     const text=parseText(data.text||'');
-    if(text.length)return text;
+    if(text.length)return {rows:text};
     await worker.setParameters({tessedit_pageseg_mode:Tesseract.PSM.AUTO});
     const fallback=await worker.recognize(canvas,{}, {text:true,tsv:true});
     const parsed=parseGrid(fallback.data.tsv||'');
-    return parsed.length?parsed:parseText(fallback.data.text||'');
+    return {rows:parsed.length?parsed:parseText(fallback.data.text||'')};
   } finally {await worker.terminate();onWorker(null);}
 }
 
@@ -77,9 +132,9 @@ export function openImport({showDialog,dialog,overlay,startDate,onSave}) {
   <div class="row"><button type="button" id="ocr-start" class="primary">识别课表</button><span id="ocr-status" role="status" class="small muted"></span></div>
   <img id="ocr-preview" alt="原课表预览" hidden>
   <div id="ocr-review" hidden>
-    <p class="small">请核对课程名、上课时间和周次。按节次识别的时间是示例，按学校作息表修改。</p>
-    <div class="split"><label>课表第 1 周的周一<input id="ocr-week" type="date" value="${startDate}"></label>
-    <label>默认最后一周<input id="ocr-end" type="number" min="1" max="30" value="16"></label></div>
+    <p class="small" id="ocr-help"></p>
+    <div class="split"><label><span id="ocr-date-label">课表第 1 周的周一</span><input id="ocr-week" type="date" value="${startDate}"></label>
+    <label id="ocr-end-label">默认最后一周<input id="ocr-end" type="number" min="1" max="30" value="16"></label></div>
     <div id="ocr-rows"></div>
     <div class="row"><button type="button" id="ocr-add">＋ 补一门</button><button type="submit" id="ocr-save" class="primary">加入我的日历</button></div>
   </div>
@@ -87,7 +142,7 @@ export function openImport({showDialog,dialog,overlay,startDate,onSave}) {
   const get=id=>overlay.querySelector('#'+id);
   const input=get('ocr-file'), preview=get('ocr-preview');
   const status=get('ocr-status'), message=get('ocr-error'), review=get('ocr-review');
-  let previewUrl='';
+  let previewUrl='', weekOnly=false, cardProgress=false;
   dialog.addEventListener('close',()=>{
     closed=true;
     if(previewUrl)URL.revokeObjectURL(previewUrl);
@@ -121,8 +176,9 @@ export function openImport({showDialog,dialog,overlay,startDate,onSave}) {
         el.oninput=()=>{row[key]=el.value;};
         wrapper.append(el);box.append(wrapper);
       }
-      field('课程名称','title','text');field('星期','day','select');field('开始','start','time');
-      field('结束','end','time');field('起始周','fromWeek','number');field('结束周（可空）','toWeek','number');
+      field('课程名称','title','text');field('上课地点','location','text');field('星期','day','select');field('开始','start','time');
+      field('结束','end','time');
+      if(!weekOnly){field('起始周','fromWeek','number');field('结束周（可空）','toWeek','number');}
       const remove=document.createElement('button');remove.type='button';remove.className='quiet danger';remove.textContent='移除';
       remove.onclick=()=>{rows.splice(index,1);drawRows();};box.append(remove);
       if(row.flag){const flag=document.createElement('p');flag.className='small ocr-flag';flag.textContent=row.flag;box.append(flag);}
@@ -139,14 +195,23 @@ export function openImport({showDialog,dialog,overlay,startDate,onSave}) {
     if(!file){message.textContent='请先选择图片';return;}
     if(file.size>12*1024*1024||!['image/png','image/jpeg','image/webp'].includes(file.type)){message.textContent='请选择 12 MB 以内的 PNG、JPG 或 WebP 图片';return;}
     if(busy)return;
-    busy=true;get('ocr-start').disabled=true;input.disabled=true;review.hidden=true;
+    busy=true;weekOnly=false;cardProgress=false;get('ocr-start').disabled=true;input.disabled=true;review.hidden=true;
     status.textContent='正在加载中文识图模型，首次可能需要一两分钟…';
     try {
       const result=await recognize(file,m=>{
-        if(m.status==='recognizing text')status.textContent='正在识别 '+Math.round(m.progress*100)+'%';
-      },w=>{worker=w;if(closed&&w)void w.terminate();});
+        if(!cardProgress&&m.status==='recognizing text')status.textContent='正在识别 '+Math.round(m.progress*100)+'%';
+      },w=>{worker=w;if(closed&&w)void w.terminate();},startDate,(i,total)=>{
+        cardProgress=true;status.textContent='正在识别课程块 '+i+'/'+total;
+      });
       if(closed)return;
-      rows.splice(0,rows.length,...result.slice(0,40));
+      weekOnly=Boolean(result.weekOnly);
+      get('ocr-date-label').textContent=weekOnly?'截图所示周的周一':'课表第 1 周的周一';
+      get('ocr-week').value=result.date||(weekOnly?'':startDate);
+      get('ocr-end-label').hidden=weekOnly;
+      get('ocr-help').textContent=weekOnly
+        ?(result.date?'已从表头匹配日期。':'未能从表头确认日期，请先选择截图所示周的周一。')+' 只导入截图这一周。请核对课名和地点。'
+        :'请核对课程名、地点、上课时间和周次。按节次识别的时间可按学校作息表修改。';
+      rows.splice(0,rows.length,...result.rows.slice(0,40));
       status.textContent=rows.length?'识别到 '+rows.length+' 条候选课程':'没读出课程，请换清晰截图或补填';
       review.hidden=false;drawRows();
     } catch(e) {
@@ -158,7 +223,7 @@ export function openImport({showDialog,dialog,overlay,startDate,onSave}) {
   get('timetable-form').onsubmit=async e=>{
     e.preventDefault();message.textContent='';
     const button=get('ocr-save');button.disabled=true;
-    try { await onSave(toCalendar(rows,get('ocr-week').value,get('ocr-end').value)); }
+    try { await onSave(toCalendar(rows,get('ocr-week').value,get('ocr-end').value,weekOnly)); }
     catch(err){message.textContent=err.message;button.disabled=false;}
   };
 }

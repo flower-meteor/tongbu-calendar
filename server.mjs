@@ -10,9 +10,9 @@ export function makeServer({database=':memory:', ...options}={}) {
   sqlite.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000');
   sqlite.exec(migrations[0]);
   sqlite.exec(migrations[1]);
-  if (!sqlite.prepare('PRAGMA table_info(events)').all().some(column=>column.name==='repeat_until')) {
-    sqlite.exec(migrations[2]);
-  }
+  const columns=sqlite.prepare('PRAGMA table_info(events)').all().map(column=>column.name);
+  if(!columns.includes('repeat_until'))sqlite.exec(migrations[2]);
+  if(!columns.includes('location'))sqlite.exec(migrations[3]);
   const db={
     prepare(sql){
       return {bind(...args){

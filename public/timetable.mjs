@@ -125,7 +125,7 @@ export function parseGrid(tsv) {
   return result.sort((a,b)=>a.day-b.day||a.start.localeCompare(b.start));
 }
 
-export function toCalendar(rows,monday,defaultEnd) {
+export function toCalendar(rows,monday,defaultEnd,weekOnly=false) {
   const base=Date.parse(monday+'T00:00:00+08:00');
   const weekday=new Date(base+8*3_600_000).getUTCDay();
   if(!Number.isFinite(base)||weekday!==1)throw new Error('请选择开学第一周的周一');
@@ -135,6 +135,7 @@ export function toCalendar(rows,monday,defaultEnd) {
     const clock=/^(?:[01]\d|2[0-3]):[0-5]\d$/;
     if(!Number.isInteger(day)||day<0||day>6||!clock.test(r.start)||!clock.test(r.end)||r.start>=r.end)throw new Error('请核对第 '+(i+1)+' 行的星期和时间');
     const make=(week,clock)=>new Date(base+(week-1)*WEEK+day*DAY+Number(clock.slice(0,2))*3_600_000+Number(clock.slice(3))*60_000).toISOString();
-    return {title:r.title.trim(),start:make(first,r.start),end:make(first,r.end),until:make(last,r.start)};
+    return {title:r.title.trim(),start:make(first,r.start),end:make(first,r.end),until:weekOnly?null:make(last,r.start),
+      ...(r.location?.trim()?{location:r.location.trim()}:{}),...(weekOnly?{weekly:false}:{})};
   });
 }

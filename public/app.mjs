@@ -93,7 +93,7 @@ function dashboard() {
     const d=state.week+i*DAY, key=dateKey(d);
     const items=show.filter(e=>e.end>d&&e.start<d+DAY);
     return `<section class="day ${key===today?'today':''}"><button class="day-head" data-day="${d}" aria-label="${key} 添加日程">${weekdays[i]} <strong>${Number(key.slice(-2))}</strong><span aria-hidden="true">＋</span></button>
-      <div class="cards">${items.map(e=>`<button class="event ${kinds[e.kind]?e.kind:'other'}" data-event="${e.id}:${e.start}"><span>${range(Math.max(e.start,d),Math.min(e.end,d+DAY-1))}</span><b>${safe(e.title)}</b><small>${safe(name(e.uid))}${e.weekly?' · 每周':''}</small></button>`).join('')}</div></section>`;
+      <div class="cards">${items.map(e=>`<button class="event ${kinds[e.kind]?e.kind:'other'}" data-event="${e.id}:${e.start}"><span>${range(Math.max(e.start,d),Math.min(e.end,d+DAY-1))}</span><b>${safe(e.title)}</b>${e.location?`<small>${safe(e.location)}</small>`:''}<small>${safe(name(e.uid))}${e.weekly?' · 每周':''}</small></button>`).join('')}</div></section>`;
   }).join('');
   const {team}=state;
   screen(`<div class="headline"><div><h1>${safe(team.name)}</h1><p>${state.members.length} 位成员 · 北京时间 (UTC+8)</p></div><div class="actions"><button id="find">找共同空闲</button><button id="import">上传课表</button><button class="primary" id="add">＋ 新建日程</button></div></div>
@@ -114,14 +114,14 @@ function dashboard() {
   $('import').onclick=()=>openImport({showDialog,dialog,overlay,startDate:dateKey(state.week),onSave:async events=>{
     const {added}=await api(`/teams/${team.id}/import`,'POST',{events});
     dialog.close();
-    await loadTeam(team.id).catch(failure);
+    await loadTeam(team.id,startOfWeek(Date.parse(events[0].start))).catch(failure);
     toast(added?'已加入 '+added+' 门课程':'这些课程已在日历中');
   }});
   main.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>editEvent(null,Number(b.dataset.day)+9*60*MINUTE));
   main.querySelectorAll('[data-event]').forEach(b=>b.onclick=()=>{
     const event=show.find(e=>e.id+':'+e.start===b.dataset.event);
     if(event.uid===state.user.id) editEvent(event);
-    else showDialog(event.title,`<p>${safe(name(event.uid))} · ${kinds[event.kind]}<br>${dateKey(event.start)} · ${range(event.start,event.end)}${event.weekly?' · 每周重复':''}</p>`);
+    else showDialog(event.title,`<p>${safe(name(event.uid))} · ${kinds[event.kind]}<br>${dateKey(event.start)} · ${range(event.start,event.end)}${event.weekly?' · 每周重复':''}${event.location?'<br>地点：'+safe(event.location):''}</p>`);
   });
   if(team.invite) {
     $('copy').onclick=async()=>{
@@ -157,6 +157,7 @@ function editEvent(event=null,start=null,end=null,isMeeting=false) {
   end=event?.originalEnd ?? event?.end ?? end ?? start+60*MINUTE;
   showDialog(event?'编辑日程':'新建日程',`<form id="event-form">
     <label>名称<input name="title" required maxlength="100" value="${safe(event?.title??(isMeeting?'项目会议':''))}" placeholder="例如：材料力学"></label>
+    <label>地点（可选）<input name="location" maxlength="100" value="${safe(event?.location)}" placeholder="例如：将军路二号楼 2201"></label>
     <label>类型<select name="kind">${Object.entries(kinds).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label>
     <div class="split"><label>开始 · 北京时间<input name="start" required type="datetime-local" value="${local(start)}"></label><label>结束 · 北京时间<input name="end" required type="datetime-local" value="${local(end)}"></label></div>
     <label class="check"><input type="checkbox" name="weekly" ${event?.weekly?'checked':''}>每周重复${event?.weekly?'（编辑整个系列）':''}</label>
