@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="为大学生创新项目设计的团队课表与会议协调日历。">
+  <title>同频 · 团队日历</title>
+  <link rel="icon" href="/mark.svg">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.mjs" type="module"></script>
+</head>
+<body>
+<header class="top">
+  <a href="/" class="brand"><img src="/mark.svg" alt=""><span>同频 <small>团队日历</small></span></a>
+  <div class="top-tools" id="top-tools" hidden>
+    <button class="quiet" id="teams-button">切换团队</button>
+    <span id="account"></span><button class="quiet" id="logout">退出</button>
+  </div>
+</header>
+<main id="main" aria-busy="true"><p class="loading">正在加载…</p></main>
+<div class="toast" id="toast" role="status" hidden></div>
+<dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-body"></div></dialog>
+</body>
+</html>
