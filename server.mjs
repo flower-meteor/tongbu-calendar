@@ -8,7 +8,7 @@ import { makeHandler } from './api.mjs';
 export function makeServer({database=':memory:', ...options}={}) {
   const sqlite = new DatabaseSync(database);
   sqlite.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000');
-  sqlite.exec(schema);
+  for (const migration of migrations) sqlite.exec(migration);
   const db={
     prepare(sql){
       return {bind(...args){
@@ -32,7 +32,8 @@ export function makeServer({database=':memory:', ...options}={}) {
   return server;
 }
 
-const schema=await readFile(new URL('./drizzle/0000_calendar.sql',import.meta.url),'utf8');
+const journal=JSON.parse(await readFile(new URL('./drizzle/meta/_journal.json',import.meta.url),'utf8'));
+const migrations=await Promise.all(journal.entries.map(({tag})=>readFile(new URL('./drizzle/'+tag+'.sql',import.meta.url),'utf8')));
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href===import.meta.url) {
   const database=resolve(process.env.DB_PATH || 'data/tongbu.sqlite');

@@ -20,7 +20,7 @@ async function fixture(t, options) {
   };
 }
 async function exercise(request, makeUser) {
-  const owner=await makeUser(1), peer=await makeUser(2), outsider=await makeUser(3);
+  const owner=await makeUser(1), peer=await makeUser(2), outsider=await makeUser(3), another=await makeUser(4);
   const team=await request('/api/teams','POST',{name:'五人项目组'},owner);
   assert.equal(team.status,201);
   const path='/api/teams/'+team.data.id;
@@ -39,9 +39,19 @@ async function exercise(request, makeUser) {
   assert.ok(!JSON.stringify(shared.data).includes(event.title));
   assert.equal((await request(path+'/events/'+added.data.id,'DELETE',null,peer)).status,404);
   assert.equal((await request(path+'/events','POST',{...event,end:event.start},peer)).status,400);
-  assert.equal((await request(path+'/invite','POST',null,peer)).status,403);
-  assert.equal((await request(path+'/invite','POST',null,owner)).status,200);
-  assert.equal((await request('/api/join','POST',{invite},outsider)).status,404);
+  assert.equal((await request(path+'/invite','POST',null,outsider)).status,404);
+  const peerInvite=await request(path+'/invite','POST',null,peer);
+  assert.equal(peerInvite.status,201);
+  assert.equal((await request('/api/join','POST',{invite:peerInvite.data.invite},outsider)).status,200);
+  const ownerInvite=await request(path+'/invite','POST',null,owner);
+  assert.equal(ownerInvite.status,201);
+  assert.equal((await request('/api/join','POST',{invite},another)).status,404);
+  assert.equal((await request('/api/join','POST',{invite:peerInvite.data.invite},another)).status,200);
+  const updatedPeer=await request(path+'/invite','POST',null,peer);
+  assert.equal(updatedPeer.status,201);
+  assert.notEqual(updatedPeer.data.invite,peerInvite.data.invite);
+  assert.equal((await request('/api/join','POST',{invite:peerInvite.data.invite},another)).status,404);
+  assert.equal((await request('/api/join','POST',{invite:ownerInvite.data.invite},another)).status,200);
   assert.equal((await request(path+'/events/'+added.data.id,'PUT',{...event,busy:false},owner)).status,200);
   assert.equal((await request(path+week,'GET',null,peer)).data.events[0].title,event.title);
   assert.equal((await request(path+'/events/'+added.data.id,'DELETE',null,owner)).status,200);
@@ -60,16 +70,17 @@ test('standalone registration, sessions, sharing and per-team authorization',asy
   const blocked=await request('/api/register','POST',{},{origin:'https://unrelated.example'});
   assert.equal(blocked.status,403);
 });
-test('hosted sign-in identity and separate app profiles',async t=>{
-  const request=await fixture(t,{sitesIdentity:true});
-  assert.deepEqual((await request('/api/me')).data,{user:null,hosted:true,signedIn:false});
-  assert.equal((await request('/api/register','POST',{name:'游客'})).status,401);
-  await exercise(request,async i=>{
-    const headers={'oai-authenticated-user-id':'sites-account-'+i};
-    assert.equal((await request('/api/me','GET',null,headers)).data.signedIn,true);
-    assert.equal((await request('/api/register','POST',{name:'成员'+i},headers)).status,200);
-    return headers;
-  });
+test('hosted registration establishes a secure app session independently of ChatGPT identity',async t=>{
+  const request=await fixture(t,{worker:true,secureCookies:true});
+  const headers={'oai-authenticated-user-id':'sites-account'};
+  assert.deepEqual((await request('/api/me','GET',null,headers)).data,{user:null});
+  assert.equal((await request('/api/teams','GET',null,headers)).status,401);
+  const result=await request('/api/register','POST',{name:'成员',email:'hosted@example.test',password:'test-password'});
+  assert.equal(result.status,200);
+  assert.match(result.cookie,/^tongbu=[a-f0-9]{64}$/);
+  assert.equal((await request('/api/me','GET',null,{cookie:result.cookie})).data.user.name,'成员');
+  assert.equal((await request('/api/logout','POST',null,{cookie:result.cookie})).status,200);
+  assert.equal((await request('/api/me','GET',null,{cookie:result.cookie})).data.user,null);
 });
 test('weekly and overnight time windows are calculated in Beijing time',()=>{
   assert.equal(startOfWeek(when('00:15')),from);

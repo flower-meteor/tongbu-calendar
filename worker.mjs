@@ -15,7 +15,7 @@ export default {
     }
     let handler=handlers.get(env.DB);
     if(!handler) {
-      handler=makeHandler({db:env.DB,secureCookies:true,sitesIdentity:true,readAsset:async name=>embedded[name]});
+      handler=makeHandler({db:env.DB,secureCookies:true,worker:true,readAsset:async name=>embedded[name]});
       handlers.set(env.DB,handler);
     }
     const headers=new Headers();

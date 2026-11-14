@@ -26,7 +26,7 @@ function timestamp(value) {
   return time;
 }
 
-export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='', trustProxy=false, sitesIdentity=false }) {
+export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='', trustProxy=false, worker=false }) {
   const one=(sql,...args)=>db.prepare(sql).bind(...args).first();
   const all=async (sql,...args)=>(await db.prepare(sql).bind(...args).all()).results;
   const run=(sql,...args)=>db.prepare(sql).bind(...args).run();
@@ -34,7 +34,7 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
   const rate = (req) => {
     const now = Date.now();
     for (const [key, value] of attempts) { if (value.reset <= now) attempts.delete(key); }
-    const key = sitesIdentity ? req.headers['cf-connecting-ip'] || req.socket.remoteAddress : trustProxy ? (req.headers['x-forwarded-for'] || '').split(',').at(-1).trim() || req.socket.remoteAddress : req.socket.remoteAddress;
+    const key = worker ? req.headers['cf-connecting-ip'] || req.socket.remoteAddress : trustProxy ? (req.headers['x-forwarded-for'] || '').split(',').at(-1).trim() || req.socket.remoteAddress : req.socket.remoteAddress;
     const value = attempts.get(key) ?? {count:0,reset:now+15*60_000};
     if (value.count++ >= 30) throw error(429,'尝试次数过多，请稍后再试');
     attempts.set(key,value);
@@ -91,22 +91,7 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
       }
       if (!path.startsWith('/api/')) throw error(404,'页面不存在');
       if (method!=='GET' && (req.headers['sec-fetch-site']==='cross-site' || (req.headers.origin && req.headers.origin!==(publicOrigin || `${req.socket.encrypted?'https':'http'}://${req.headers.host}`)))) throw error(403,'请求来源无效');
-      let user;
-      if (sitesIdentity) {
-        const account=req.headers['oai-authenticated-user-id'];
-        user=account ? await one('SELECT id,name,email FROM users WHERE id=?',account) : null;
-        if (method==='GET' && path==='/api/me') return send(res,{user:user?{id:user.id,name:user.name}:null, hosted:true, signedIn:!!account});
-        if (method==='POST' && path==='/api/register') {
-          if (!account) throw error(401,'请先使用 ChatGPT 登录');
-          const b=await body(req);
-          const name=text(b.name,1,28,'请输入 1 至 28 个字符的昵称');
-          const email=account+'@sites.local';
-          await run('INSERT INTO users VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING',account,name,email,'sites');
-          return send(res,{user:await one('SELECT id,name FROM users WHERE id=?',account)});
-        }
-        if (path==='/api/login' || path==='/api/logout') throw error(404,'请通过站点登录入口操作');
-      }
-      if (!sitesIdentity && method==='POST' && (path==='/api/register' || path==='/api/login')) {
+      if (method==='POST' && (path==='/api/register' || path==='/api/login')) {
         rate(req);
         const b=await body(req);
         const email=text(b.email,3,254,'请填写有效邮箱').toLowerCase();
@@ -121,13 +106,13 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
           if (!inserted.meta.changes) throw error(409,'这个邮箱已经注册，可以直接登录');
           return loggedIn(res,{id,name,email});
         }
-        const user=await one('SELECT * FROM users WHERE email=?',email);
+        const user=await one("SELECT * FROM users WHERE email=? AND password<>'sites'",email);
         const [salt,digest]=(user?.password ?? ('0'.repeat(32)+':'+'0'.repeat(64))).split(':');
         const matches=constantEqual(await derive(password,salt),digest);
         if (!user || !matches) throw error(401,'邮箱或密码不正确');
         return loggedIn(res,{id:user.id,name:user.name,email:user.email});
       }
-      if (!sitesIdentity) user=await session(req);
+      const user=await session(req);
       if (method==='GET' && path==='/api/me') return send(res,{user:user||null});
       if (!user) throw error(401,'请先登录');
       if (method==='POST' && path==='/api/logout') {
@@ -152,7 +137,13 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
         rate(req);
         const {invite}=await body(req);
         const code=text(invite,16,16,'请输入 16 位团队邀请码').toUpperCase();
-        const team=await one('SELECT id FROM teams WHERE invite=?',code);
+        const team=await one(`
+          SELECT team AS id FROM invites WHERE code=?
+          UNION ALL
+          SELECT t.id FROM teams t WHERE t.invite=? AND NOT EXISTS (
+            SELECT 1 FROM invites i WHERE i.team=t.id AND i.uid=t.owner
+          )
+          LIMIT 1`,code,code);
         if (!team) throw error(404,'邀请码不存在，请检查后重试');
         await run('INSERT OR IGNORE INTO members VALUES (?,?)',team.id,user.id);
         return send(res,{id:team.id});
@@ -163,10 +154,9 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
       const team=await one('SELECT t.* FROM teams t JOIN members m ON t.id=m.team WHERE t.id=? AND m.uid=?',id,user.id);
       if (!team) throw error(404,'找不到该团队');
       if (method==='POST' && action==='invite' && !eventId) {
-        if (team.owner!==user.id) throw error(403,'仅创建者可以更新邀请码');
         const invite=token(8).toUpperCase();
-        await run('UPDATE teams SET invite=? WHERE id=?',invite,id);
-        return send(res,{invite});
+        await run('INSERT INTO invites (team,uid,code) VALUES (?,?,?) ON CONFLICT(team,uid) DO UPDATE SET code=excluded.code',id,user.id,invite);
+        return send(res,{invite},201);
       }
       if (method==='GET' && !action) {
         const from=timestamp(url.searchParams.get('from')), to=timestamp(url.searchParams.get('to'));
@@ -175,7 +165,9 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
         const events=await all(`SELECT id,uid,CASE WHEN busy=1 AND uid<>? THEN '忙碌' ELSE title END AS title,
           CASE WHEN busy=1 AND uid<>? THEN 'other' ELSE kind END AS kind,start,end,busy,weekly
           FROM events WHERE team=? AND start<? AND (end>? OR weekly=1) ORDER BY start,id`,user.id,user.id,id,to,from);
-        return send(res,{members,events,team:{id,name:team.name,owner:team.owner,invite:team.owner===user.id?team.invite:null}});
+        const ownInvite=await one('SELECT code FROM invites WHERE team=? AND uid=?',id,user.id);
+        const invite=ownInvite?.code ?? (team.owner===user.id?team.invite:null);
+        return send(res,{members,events,team:{id,name:team.name,owner:team.owner,invite}});
       }
       if (method==='POST' && action==='events' && !eventId) {
         const fields=eventFields(await body(req));

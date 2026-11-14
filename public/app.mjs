@@ -41,16 +41,10 @@ function form(id,fn) {
 }
 const message='<div class="error" role="alert"></div>';
 const intro='<div class="intro"><img src="/mark.svg" alt=""><h1>把时间<br>约到一起。</h1><p>把课表、考试和活动放在同一张日历里，直接找到大家都空的时间。</p><div class="sample" aria-label="日程显示示例"><div class="event class">09:00 · 专业课</div><div class="event exam">14:00 · 期中考试</div><div class="free">17:30–18:30 · 示例共同空闲</div></div></div>';
-const hostedLink=path=>path+'?return_to='+encodeURIComponent(location.pathname+location.search);
-function hostedAuth(signedIn) {
-  screen(`<section class="gate">${intro}<div class="gate-form"><h2>${signedIn?'注册同频资料':'登录同频'}</h2>${state.invite?'<p>已收到团队邀请，登录后确认加入。</p>':''}
-  ${signedIn?`<form id="profile-form"><label>团队里显示的昵称<input name="name" required maxlength="28" autocomplete="nickname"></label>${message}<button class="primary" type="submit">完成注册</button></form>`:`<p>使用 ChatGPT 账号登录。首次使用时，填写昵称即可注册同频。</p><a class="primary button" href="${safe(hostedLink('/signin-with-chatgpt'))}" target="_top">使用 ChatGPT 登录</a>`}</div></section>`);
-  if(signedIn) form('profile-form',async fields=>{state.user=(await api('/register','POST',fields)).user;await teams().catch(failure);});
-}
-function auth(register=Boolean(state.invite)) {
+function auth(register=true) {
   screen(`<section class="gate">
     ${intro}
-    <div class="gate-form"><h2>${register?'注册同频':'登录同频'}</h2>${state.invite?'<p>已收到团队邀请，登录后确认加入。</p>':''}
+    <div class="gate-form"><h2>${register?'注册同频':'登录同频'}</h2>${state.invite?'<p>已收到团队邀请，登录后确认加入。</p>':register?'<p>填写昵称、邮箱和密码即可注册。创建团队后就能邀请队友。</p>':''}
     <form id="auth-form">${register?'<label>昵称<input name="name" required maxlength="28" autocomplete="nickname"></label>':''}
     <label>邮箱<input name="email" type="email" required maxlength="254" autocomplete="email"></label>
     <label>密码<input name="password" type="password" required minlength="8" maxlength="128" autocomplete="${register?'new-password':'current-password'}"></label>
@@ -107,7 +101,8 @@ function dashboard() {
     <div class="legend">${Object.entries(kinds).map(([k,v])=>`<span class="${k}">${v}</span>`).join('')}</div><div class="week">${days}</div></section>
     <aside class="side"><section class="panel"><h3>团队成员</h3>${state.members.map(memberRow).join('')}
     <label>筛选日程<select id="filter"><option value="all">所有成员</option>${state.members.map(m=>`<option value="${m.id}">${safe(m.name)}</option>`).join('')}</select></label></section>
-    ${team.invite?`<section class="panel"><h3>邀请队友</h3><p>将链接或邀请码发给队友。注册后即可加入本团队。</p><code id="invite-code">${safe(team.invite)}</code><div class="row"><button id="copy">复制链接</button><button id="renew" class="quiet">更新邀请码</button></div></section>`:''}</aside></div>`);
+    <section class="panel"><h3>邀请队友</h3><p>每位成员都能生成自己的邀请码。队友注册后可用它加入本团队。</p>${team.invite?`<code>${safe(team.invite)}</code>`:''}
+    <div class="row">${team.invite?'<button id="copy">复制邀请链接</button>':''}<button id="renew" ${team.invite?'class="quiet"':'class="primary"'}>${team.invite?'更新我的邀请码':'生成邀请码'}</button></div></section></aside></div>`);
   $('filter').value=state.filter;
   $('filter').onchange=e=>{state.filter=e.target.value;dashboard();$('filter').focus();};
   const move=week=>loadTeam(team.id,week).catch(e=>toast(e.message));
@@ -127,15 +122,22 @@ function dashboard() {
       try { await navigator.clipboard.writeText(link.href); toast('邀请链接已复制'); }
       catch { showDialog('邀请链接',`<label>复制后发给队友<input readonly value="${safe(link.href)}"></label>`);overlay.querySelector('input').select(); }
     };
-    $('renew').onclick=()=>{
-      showDialog('更新邀请码','<p>旧链接会失效，已加入的成员仍可访问日历。</p><div class="row"><button class="primary" id="confirm-invite">确认更新</button></div>');
-      $('confirm-invite').onclick=async e=>{
-        e.target.disabled=true;
-        try { await api(`/teams/${team.id}/invite`,'POST'); dialog.close(); await move(state.week);toast('邀请码已更新'); }
-        catch(e){toast(e.message);$('confirm-invite').disabled=false;}
-      };
-    };
   }
+  const generateInvite=async e=>{
+    const button=e.currentTarget;
+    const updating=Boolean(team.invite);
+    button.disabled=true;
+    try {
+      const {invite}=await api(`/teams/${team.id}/invite`,'POST');
+      if(dialog.open) dialog.close();
+      if(state.team?.id===team.id) { state.team.invite=invite; dashboard(); }
+      toast(updating?'邀请码已更新':'邀请码已生成');
+    } catch(err){toast(err.message);button.disabled=false;}
+  };
+  $('renew').onclick=team.invite?()=>{
+    showDialog('更新我的邀请码','<p>你的旧链接会失效。队友发出的链接和已加入的成员不受影响。</p><div class="row"><button class="primary" id="confirm-invite">确认更新</button></div>');
+    $('confirm-invite').onclick=generateInvite;
+  }:generateInvite;
 }
 function showDialog(title,html) {
   overlay.innerHTML=`<div class="dialog-head"><h2 id="dialog-title">${safe(title)}</h2><button id="close-dialog" class="quiet" aria-label="关闭">×</button></div>${html}`;
@@ -192,8 +194,7 @@ function findMeeting() {
 }
 $('teams-button').onclick=()=>teams().catch(failure);
 $('logout').onclick=async()=>{
-  if(state.hosted){location.assign(hostedLink('/signout-with-chatgpt'));return;}
-  try { await api('/logout','POST'); ++updateNumber;state.user=null;state.team=null;auth(); }
+  try { await api('/logout','POST'); ++updateNumber;state.user=null;state.team=null;auth(false); }
   catch(e){toast(e.message);}
 };
-api('/me').then(({user,hosted,signedIn})=>{state.user=user;state.hosted=hosted;return user?teams(true):hosted?hostedAuth(signedIn):auth();}).catch(failure);
+api('/me').then(({user})=>{state.user=user;return user?teams(true):auth();}).catch(failure);
