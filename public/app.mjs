@@ -1,4 +1,5 @@
 import { DAY, WEEK, MINUTE, dateKey, timeLabel, startOfDay, startOfWeek, occurrences, available } from './calendar.mjs';
+import { openImport } from './import.mjs';
 
 const $=id=>document.getElementById(id);
 const main=$('main'), dialog=$('dialog'), overlay=$('dialog-body');
@@ -95,7 +96,7 @@ function dashboard() {
       <div class="cards">${items.map(e=>`<button class="event ${kinds[e.kind]?e.kind:'other'}" data-event="${e.id}:${e.start}"><span>${range(Math.max(e.start,d),Math.min(e.end,d+DAY-1))}</span><b>${safe(e.title)}</b><small>${safe(name(e.uid))}${e.weekly?' · 每周':''}</small></button>`).join('')}</div></section>`;
   }).join('');
   const {team}=state;
-  screen(`<div class="headline"><div><h1>${safe(team.name)}</h1><p>${state.members.length} 位成员 · 北京时间 (UTC+8)</p></div><div class="actions"><button id="find">找共同空闲</button><button class="primary" id="add">＋ 新建日程</button></div></div>
+  screen(`<div class="headline"><div><h1>${safe(team.name)}</h1><p>${state.members.length} 位成员 · 北京时间 (UTC+8)</p></div><div class="actions"><button id="find">找共同空闲</button><button id="import">上传课表</button><button class="primary" id="add">＋ 新建日程</button></div></div>
     <div class="dashboard"><section class="calendar" aria-label="团队周历">
     <div class="calendar-top"><div class="nav"><button id="prev" aria-label="上一周">‹</button><button id="next" aria-label="下一周">›</button><button id="current">本周</button></div><h2>${dateKey(state.week).replaceAll('-','/')} — ${dateKey(state.week+6*DAY).slice(5).replace('-','/')}</h2><button id="refresh">刷新</button></div>
     <div class="legend">${Object.entries(kinds).map(([k,v])=>`<span class="${k}">${v}</span>`).join('')}</div><div class="week">${days}</div></section>
@@ -110,6 +111,12 @@ function dashboard() {
   $('current').onclick=()=>move(startOfWeek(Date.now())); $('refresh').onclick=()=>move(state.week);
   $('find').onclick=findMeeting;
   $('add').onclick=()=>editEvent();
+  $('import').onclick=()=>openImport({showDialog,dialog,overlay,startDate:dateKey(state.week),onSave:async events=>{
+    const {added}=await api(`/teams/${team.id}/import`,'POST',{events});
+    dialog.close();
+    await loadTeam(team.id).catch(failure);
+    toast(added?'已加入 '+added+' 门课程':'这些课程已在日历中');
+  }});
   main.querySelectorAll('[data-day]').forEach(b=>b.onclick=()=>editEvent(null,Number(b.dataset.day)+9*60*MINUTE));
   main.querySelectorAll('[data-event]').forEach(b=>b.onclick=()=>{
     const event=show.find(e=>e.id+':'+e.start===b.dataset.event);
@@ -153,6 +160,7 @@ function editEvent(event=null,start=null,end=null,isMeeting=false) {
     <label>类型<select name="kind">${Object.entries(kinds).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label>
     <div class="split"><label>开始 · 北京时间<input name="start" required type="datetime-local" value="${local(start)}"></label><label>结束 · 北京时间<input name="end" required type="datetime-local" value="${local(end)}"></label></div>
     <label class="check"><input type="checkbox" name="weekly" ${event?.weekly?'checked':''}>每周重复${event?.weekly?'（编辑整个系列）':''}</label>
+    <label>重复截止日期（可选）<input type="date" name="until" value="${event?.until==null?'':dateKey(event.until)}"></label>
     <label class="check"><input type="checkbox" name="busy" ${event?.busy?'checked':''}>对队友仅显示「忙碌」</label>
     ${message}<div class="form-actions">${event?'<button type="button" id="delete" class="danger">删除日程</button>':''}<button class="primary" type="submit">保存日程</button></div></form>`);
   const formNode=$('event-form');
@@ -162,7 +170,7 @@ function editEvent(event=null,start=null,end=null,isMeeting=false) {
   };
   form('event-form',async data=>{
     const url=`/teams/${team}/events${event?'/'+event.id:''}`;
-    await api(url,event?'PUT':'POST',{...data,start:data.start+'+08:00',end:data.end+'+08:00',weekly:!!data.weekly,busy:!!data.busy});
+    await api(url,event?'PUT':'POST',{...data,start:data.start+'+08:00',end:data.end+'+08:00',weekly:!!data.weekly,busy:!!data.busy,until:data.weekly&&data.until?data.until+'T'+data.start.slice(11)+'+08:00':null});
     dialog.close(); await loadTeam(team,event?state.week:startOfWeek(Date.parse(data.start+'+08:00'))).catch(failure); toast('日程已保存');
   });
   if(event) $('delete').onclick=()=>{

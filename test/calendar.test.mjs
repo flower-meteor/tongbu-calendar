@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeServer } from '../server.mjs';
 import { WEEK, available, dateKey, timeLabel, startOfWeek, occurrences } from '../public/calendar.mjs';
+import { parseText, parseGrid, toCalendar } from '../public/timetable.mjs';
 
 const when=value=>Date.parse('2026-11-16T'+value+':00+08:00');
 const iso=time=>new Date(time).toISOString();
@@ -96,4 +97,35 @@ test('weekly and overnight time windows are calculated in Beijing time',()=>{
     {start:when('11:00')+WEEK,end:when('22:00')+WEEK},
   ]);
   assert.deepEqual(available(nextWeek,[],from+WEEK,to+WEEK,60,from),[]);
+});
+
+test('OCR parser maps Chinese columns, periods and semester weeks',()=>{
+  const word=(line,x,y,w,value)=>[5,1,1,1,line,1,x,y,w,20,97,value].join('\t');
+  const data=[
+    word(1,130,30,60,'星期一'),word(1,330,30,60,'星期二'),word(1,530,30,60,'星期三'),
+    word(2,10,115,65,'1-2节'),word(3,128,113,80,'高等数学'),word(4,135,140,65,'2-16周'),
+    word(5,10,245,65,'3-4节'),word(6,330,240,80,'大学英语'),word(7,330,265,65,'1-8周'),
+  ].join('\n');
+  const rows=parseGrid(data);
+  assert.deepEqual(rows.map(({title,day,start,end,fromWeek,toWeek})=>[title,day,start,end,fromWeek,toWeek]),[
+    ['高等数学',0,'08:00','09:40',2,16],['大学英语',1,'10:00','11:40',1,8],
+  ]);
+  const list=parseText('周三 线性代数 9:00-10:30 第1-8周');
+  assert.equal(list[0].title,'线性代数');
+  assert.deepEqual(toCalendar(list,'2026-11-16',16),[{title:'线性代数',start:'2026-11-18T01:00:00.000Z',end:'2026-11-18T02:30:00.000Z',until:'2027-01-06T01:00:00.000Z'}]);
+});
+
+test('batch import validates all courses, skips duplicate imports and respects the last week',async t=>{
+  const request=await fixture(t);
+  const registration=await request('/api/register','POST',{name:'测试者',email:'import@example.test',password:'test-password'});
+  const headers={cookie:registration.cookie};
+  const team=await request('/api/teams','POST',{name:'我的团队'},headers);
+  const path='/api/teams/'+team.data.id;
+  const entry={title:'高等数学',start:iso(when('09:00')),end:iso(when('10:00')),until:iso(when('09:00')+WEEK)};
+  assert.equal((await request(path+'/import','POST',{events:[entry,{...entry,end:entry.start}]},headers)).status,400);
+  assert.deepEqual((await request(path+week,'GET',null,headers)).data.events,[]);
+  assert.equal((await request(path+'/import','POST',{events:[entry,entry]},headers)).data.added,1);
+  assert.equal((await request(path+'/import','POST',{events:[entry]},headers)).data.added,0);
+  const list=(await request(path+week,'GET',null,headers)).data.events;
+  assert.equal(occurrences(list,from,from+4*WEEK).length,2);
 });

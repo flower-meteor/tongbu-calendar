@@ -13,7 +13,7 @@ function constantEqual(a,b){
 }
 const day = 86_400_000;
 const categories = new Set(['class','exam','activity','meeting','other']);
-export const assets = new Map([['/', ['index.html','text/html']], ['/app.mjs',['app.mjs','text/javascript']], ['/calendar.mjs',['calendar.mjs','text/javascript']], ['/style.css',['style.css','text/css']], ['/mark.svg',['mark.svg','image/svg+xml']]]);
+export const assets = new Map([['/', ['index.html','text/html']], ['/app.mjs',['app.mjs','text/javascript']], ['/calendar.mjs',['calendar.mjs','text/javascript']], ['/timetable.mjs',['timetable.mjs','text/javascript']], ['/import.mjs',['import.mjs','text/javascript']], ['/style.css',['style.css','text/css']], ['/mark.svg',['mark.svg','image/svg+xml']]]);
 const error = (status, message) => Object.assign(new Error(message), {status});
 const text = (value, min, max, label) => {
   if (typeof value !== 'string' || value.trim().length < min || value.trim().length > max) throw error(400, label);
@@ -67,7 +67,9 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
     if (!categories.has(b.kind)) throw error(400,'请选择日程类型');
     const start=timestamp(b.start), end=timestamp(b.end);
     if (end<=start || end-start>day || start<Date.UTC(2000,0,1) || end>Date.UTC(2100,0,1)) throw error(400,'日程需在有效日期内，结束晚于开始且不超过 24 小时');
-    return [title,b.kind,start,end,Number(b.busy===true),Number(b.weekly===true)];
+    const until=b.until==null?null:timestamp(b.until);
+    if(until!==null && (b.weekly!==true || until<start || until-start>366*day)) throw error(400,'重复截止日期无效');
+    return [title,b.kind,start,end,Number(b.busy===true),Number(b.weekly===true),until];
   }
   const loggedIn = async (res, user) => {
     const key=token();
@@ -79,7 +81,7 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
   return async (req,res) => {
     res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('Referrer-Policy','same-origin');
-    res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' blob: data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
     try {
       const url=new URL(req.url,'http://local'), method=req.method;
       const path=url.pathname;
@@ -148,7 +150,7 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
         await run('INSERT OR IGNORE INTO members VALUES (?,?)',team.id,user.id);
         return send(res,{id:team.id});
       }
-      const match=path.match(/^\/api\/teams\/([a-f0-9]{24})(?:\/(events|invite)(?:\/([a-f0-9]{24}))?)?$/);
+      const match=path.match(/^\/api\/teams\/([a-f0-9]{24})(?:\/(events|invite|import)(?:\/([a-f0-9]{24}))?)?$/);
       if (!match) throw error(404,'找不到该操作');
       const [,id,action,eventId]=match;
       const team=await one('SELECT t.* FROM teams t JOIN members m ON t.id=m.team WHERE t.id=? AND m.uid=?',id,user.id);
@@ -164,7 +166,7 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
         const members=await all('SELECT u.id,u.name FROM users u JOIN members m ON u.id=m.uid WHERE m.team=? ORDER BY m.rowid',id);
         const events=await all(`SELECT id,uid,CASE WHEN busy=1 AND uid<>? THEN '忙碌' ELSE title END AS title,
           CASE WHEN busy=1 AND uid<>? THEN 'other' ELSE kind END AS kind,start,end,busy,weekly
-          FROM events WHERE team=? AND start<? AND (end>? OR weekly=1) ORDER BY start,id`,user.id,user.id,id,to,from);
+          ,repeat_until AS until FROM events WHERE team=? AND start<? AND (end>? OR (weekly=1 AND (repeat_until IS NULL OR repeat_until>=?))) ORDER BY start,id`,user.id,user.id,id,to,from,from-day);
         const ownInvite=await one('SELECT code FROM invites WHERE team=? AND uid=?',id,user.id);
         const invite=ownInvite?.code ?? (team.owner===user.id?team.invite:null);
         return send(res,{members,events,team:{id,name:team.name,owner:team.owner,invite}});
@@ -172,13 +174,24 @@ export function makeHandler({ db, readAsset, secureCookies=false, publicOrigin='
       if (method==='POST' && action==='events' && !eventId) {
         const fields=eventFields(await body(req));
         const event=token(12);
-        await run('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)',event,id,user.id,...fields);
+        await run('INSERT INTO events (id,team,uid,title,kind,start,end,busy,weekly,repeat_until) VALUES (?,?,?,?,?,?,?,?,?,?)',event,id,user.id,...fields);
         return send(res,{id:event},201);
+      }
+      if (method==='POST' && action==='import' && !eventId) {
+        const {events}=await body(req);
+        if(!Array.isArray(events) || events.length<1 || events.length>40) throw error(400,'每次可导入 1 至 40 门课程');
+        const fields=events.map(e=>eventFields({...e,kind:'class',weekly:true}));
+        const statements=fields.map(f=>db.prepare(`INSERT INTO events (id,team,uid,title,kind,start,end,busy,weekly,repeat_until)
+          SELECT ?,?,?,?,?,?,?,?,?,? WHERE NOT EXISTS (
+            SELECT 1 FROM events WHERE team=? AND uid=? AND title=? AND kind=? AND start=? AND end=? AND weekly=1 AND repeat_until IS ?
+          )`).bind(token(12),id,user.id,...f,id,user.id,f[0],f[1],f[2],f[3],f[6]));
+        const results=await db.batch(statements);
+        return send(res,{added:results.reduce((total,result)=>total+result.meta.changes,0)},201);
       }
       if (action==='events' && eventId && ['PUT','DELETE'].includes(method)) {
         const fields=method==='PUT'?eventFields(await body(req)):null;
         const result=method==='PUT'
-          ? await run('UPDATE events SET title=?,kind=?,start=?,end=?,busy=?,weekly=? WHERE id=? AND team=? AND uid=?',...fields,eventId,id,user.id)
+          ? await run('UPDATE events SET title=?,kind=?,start=?,end=?,busy=?,weekly=?,repeat_until=? WHERE id=? AND team=? AND uid=?',...fields,eventId,id,user.id)
           : await run('DELETE FROM events WHERE id=? AND team=? AND uid=?',eventId,id,user.id);
         if (!result.meta.changes) throw error(404,'找不到你创建的这条日程');
         return send(res,{ok:true});

@@ -8,7 +8,11 @@ import { makeHandler } from './api.mjs';
 export function makeServer({database=':memory:', ...options}={}) {
   const sqlite = new DatabaseSync(database);
   sqlite.exec('PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000');
-  for (const migration of migrations) sqlite.exec(migration);
+  sqlite.exec(migrations[0]);
+  sqlite.exec(migrations[1]);
+  if (!sqlite.prepare('PRAGMA table_info(events)').all().some(column=>column.name==='repeat_until')) {
+    sqlite.exec(migrations[2]);
+  }
   const db={
     prepare(sql){
       return {bind(...args){

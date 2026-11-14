@@ -12,7 +12,8 @@ export function occurrences(events,from,to) {
   return events.flatMap(e=>{
     if (!e.weekly) return e.end>from&&e.start<to?[e]:[];
     const list=[];
-    for (let i=Math.max(0,Math.floor((from-e.end)/WEEK)+1);e.start+i*WEEK<to;i++) {
+    const stop=Math.min(to,e.until==null?Infinity:e.until+1);
+    for (let i=Math.max(0,Math.floor((from-e.end)/WEEK)+1);e.start+i*WEEK<stop;i++) {
       list.push({...e,start:e.start+i*WEEK,end:e.end+i*WEEK,originalStart:e.start,originalEnd:e.end});
     }
     return list;
