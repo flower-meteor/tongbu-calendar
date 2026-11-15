@@ -2,17 +2,15 @@ import { labels,parseText,parseGrid,toCalendar } from './timetable.mjs';
 import { locateCards,cardCourse,screenshotMonday } from './cards.mjs';
 
 const cdn='https://cdn.jsdelivr.net/npm';
-const core=cdn+'/tesseract.js-core@6.0.0';
-const workerUrl=cdn+'/tesseract.js@6.0.1/dist/worker.min.js';
 let engine;
 function loadEngine() {
-  if(!engine) engine=new Promise((resolve,reject)=>{
+  if(!engine) engine=fetch('/ocr/tesseract.min.js',{method:'HEAD'}).then(res=>res.ok,()=>false).then(local=>new Promise((resolve,reject)=>{
     const script=document.createElement('script');
-    script.src=cdn+'/tesseract.js@6.0.1/dist/tesseract.min.js';
-    script.onload=()=>globalThis.Tesseract?resolve(globalThis.Tesseract):reject(new Error('识图组件未加载'));
+    script.src=local?'/ocr/tesseract.min.js':cdn+'/tesseract.js@6.0.1/dist/tesseract.min.js';
+    script.onload=()=>globalThis.Tesseract?resolve({Tesseract:globalThis.Tesseract,local}):reject(new Error('识图组件未加载'));
     script.onerror=()=>reject(new Error('识图组件下载失败，请检查网络后重试'));
     document.head.append(script);
-  }).catch(error=>{engine=null;throw error;});
+  })).catch(error=>{engine=null;throw error;});
   return engine;
 }
 async function prepareImage(file) {
@@ -76,8 +74,11 @@ function crop(canvas,x,y,w,h,card=false) {
   return result;
 }
 async function recognize(file,logger,onWorker,startDate,onProgress) {
-  const [Tesseract,canvas]=await Promise.all([loadEngine(),prepareImage(file)]);
-  const worker=await Tesseract.createWorker('chi_sim+eng',1,{logger,corePath:core,workerPath:workerUrl,workerBlobURL:true});
+  const [{Tesseract,local},canvas]=await Promise.all([loadEngine(),prepareImage(file)]);
+  const options=local
+    ?{corePath:'/ocr',workerPath:'/ocr/worker.min.js',langPath:location.origin+'/ocr',workerBlobURL:false}
+    :{corePath:cdn+'/tesseract.js-core@6.0.0',workerPath:cdn+'/tesseract.js@6.0.1/dist/worker.min.js',workerBlobURL:true};
+  const worker=await Tesseract.createWorker('chi_sim+eng',1,{logger,...options});
   onWorker(worker);
   try {
     const ctx=canvas.getContext('2d');

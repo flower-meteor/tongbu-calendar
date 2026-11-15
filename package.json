@@ -3,6 +3,18 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": {"node": ">=24"},
-  "scripts": {"start": "node server.mjs", "test": "node --test", "build": "node build.mjs"}
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test",
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@tesseract.js-data/chi_sim": "1.0.0",
+    "@tesseract.js-data/eng": "1.0.0",
+    "tesseract.js": "6.0.1",
+    "tesseract.js-core": "6.0.0"
+  }
 }

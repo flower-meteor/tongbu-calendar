@@ -24,6 +24,8 @@ npm start
 
 浏览器打开 http://127.0.0.1:3000 。自托管版使用邮箱和密码注册，数据保存在 data/tongbu.sqlite。邮箱作为登录名，当前没有验证邮件或密码找回。建议部署在带 HTTPS 的反向代理后，设置 `HOST=0.0.0.0`、`PUBLIC_ORIGIN=https://你的域名`、`DB_PATH=/持久化目录/tongbu.sqlite`。仅可信代理可访问应用端口且代理维护转发地址时，可设 `TRUST_PROXY=1`。
 
+将仓库连接到 Railway 后，可用 Dockerfile 部署。挂载持久化卷到 `/data`，设置 `DB_PATH=/data/tongbu.sqlite`，并在公共网络设置中生成 HTTPS 域名。Docker 版随站点提供识图组件和语言模型。本地也可以运行 `npm ci --ignore-scripts` 和 `node stage-ocr.mjs`，再启动服务。
+
 Sites 托管版使用相同的邮箱和密码注册流程，数据保存在 D1。部署到另一个 Sites 项目时，将 .openai/hosting.json 中的项目 ID 改为自己的项目 ID，保留 DB 绑定，通过 `npm run build` 生成 Worker，随站点应用 drizzle/ 下的迁移。此前使用 ChatGPT 登录的资料不会自动绑定到新账号。有旧邀请码的成员可以注册后用它重新加入原团队。
 
 团队数据仅对已加入的成员开放。成员可以编辑自己添加的日程。仅显示忙碌的日程仍参与计算，其他成员看不到标题或类型。每周重复的日程按整个系列编辑或删除。

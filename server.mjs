@@ -3,7 +3,7 @@ import { readFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { makeHandler } from './api.mjs';
+import { makeHandler, assets } from './api.mjs';
 
 export function makeServer({database=':memory:', ...options}={}) {
   const sqlite = new DatabaseSync(database);
@@ -38,11 +38,22 @@ export function makeServer({database=':memory:', ...options}={}) {
 
 const journal=JSON.parse(await readFile(new URL('./drizzle/meta/_journal.json',import.meta.url),'utf8'));
 const migrations=await Promise.all(journal.entries.map(({tag})=>readFile(new URL('./drizzle/'+tag+'.sql',import.meta.url),'utf8')));
+try {
+  await readFile(new URL('./public/ocr/tesseract.min.js',import.meta.url));
+  for(const file of ['tesseract.min.js','worker.min.js','tesseract-core-lstm.wasm.js','tesseract-core-simd-lstm.wasm.js','chi_sim.traineddata.gz','eng.traineddata.gz','LICENSE-tesseract.txt','LICENSE-core.txt']){
+    const type=file.endsWith('.js')?'text/javascript':file.endsWith('.gz')?'application/octet-stream':'text/plain';
+    assets.set('/ocr/'+file,['ocr/'+file,type]);
+  }
+} catch(error) {
+  if(error.code!=='ENOENT')throw error;
+}
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href===import.meta.url) {
   const database=resolve(process.env.DB_PATH || 'data/tongbu.sqlite');
   await mkdir(dirname(database),{recursive:true});
-  const publicOrigin=process.env.PUBLIC_ORIGIN ? new URL(process.env.PUBLIC_ORIGIN).origin : '';
-  const port=Number(process.env.PORT||3000), host=process.env.HOST||'127.0.0.1';
+  const domain=process.env.RAILWAY_PUBLIC_DOMAIN;
+  const origin=process.env.PUBLIC_ORIGIN || (domain ? 'https://'+domain : '');
+  const publicOrigin=origin?new URL(origin).origin:'';
+  const port=Number(process.env.PORT||3000), host=process.env.HOST||(process.env.RAILWAY_ENVIRONMENT_ID?'0.0.0.0':'127.0.0.1');
   makeServer({database, publicOrigin, secureCookies:publicOrigin.startsWith('https:'), trustProxy:process.env.TRUST_PROXY==='1'}).listen(port,host,()=>console.log(`同频 · http://${host}:${port}`));
 }

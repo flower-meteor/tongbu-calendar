@@ -3,3 +3,4 @@
 /.env
 /.wrangler/
 /dist/
+/public/ocr/
